@@ -1,0 +1,150 @@
+import requests
+from lxml import etree
+import re
+import time
+from fake_useragent import UserAgent
+import threading
+import redis
+
+redis_conn1 = redis.Redis(host='127.0.0.1', port=6379, db=0)
+
+
+
+
+
+def get_html(url):
+    headers = {'User-Agent': UserAgent().random}
+    response = requests.get(url, headers=headers)
+    response.encoding = response.apparent_encoding
+    if response.encoding == 'Windows-1254':
+        response.encoding = 'utf-8'
+    if str(response.status_code == '200'):
+        return response.text
+    else:
+        print('连接失败')
+
+
+#获取所有榜单url
+def get_all_url():
+    url = 'http://top.baidu.com/boards?fr=topbuzz_b338_c1'
+    content = etree.HTML(get_html(url))
+    all_title = content.xpath("//h3[@class='title']/a/text()")
+    all_url = content.xpath("//div[@class='links']/a[1]/@href")
+    allUrl = []
+    for i in all_url:
+        i = 'http://top.baidu.com/' + i.split('/')[-1]
+        if '353' not in i:
+            get_realtime_list(i)
+
+
+#获取榜单列表
+def get_realtime_list(url):
+    html = etree.HTML(get_html(url))
+    parser_title = html.xpath("//div[@class='hblock']/ul/li/a/@title")
+    parser_href = html.xpath("//div[@class='hblock']/ul/li/a/@href")
+
+    for i in range(1, len(parser_href)):
+        redain_href = 'http://top.baidu.com/' + parser_href[i].split('/')[-1]
+        text = parser_title[i] + ':' + redain_href
+        redain_one_text = etree.HTML(get_html(redain_href))
+        redain_text = redain_one_text.xpath("//tr/td[@class='keyword']/a[@class='list-title']/text()") #热点榜单关键词
+        redian_url = redain_one_text.xpath("//tr/td[@class='keyword']/a[@class='list-title']/@href")   #热点榜单链接
+        with open('list.txt', 'a', encoding='utf-8') as f:
+            for i in range(0, len(redain_text)):
+                content = redain_text[i] + '---' + redian_url[i] + '\n'
+                redis_conn1.rpush(redain_text[i], redian_url[i])
+                print('a数据插入成功')
+                f.write(content)
+
+
+#获得搜索页链接列表
+def getresult(url, name):
+    search_title = re.findall(r'"title":"(.*)","url":".*"', url)
+    search_url = re.findall(r'"title":".*","url":"(.*)"', url)
+    for x in range(0, len(search_title)):
+        if '百度百科' not in search_title[x]:
+            if '百度知道' not in search_title[x]:
+                content = search_title[x] + '----' + search_url[x] + '\n' #标题-链接
+                redis_conn1.rpush(search_title[x], search_url[x])
+                print('b数据插入成功')
+                with open(name + '.txt', 'a', encoding='utf-8') as f:
+                    f.write(content)
+
+
+def search():
+    with open('list.txt', 'r', encoding='utf-8') as f:
+        list_url = re.findall('---(.*)', f.read())
+        for i in list_url:
+            print('执行线程1.5')
+            main = get_html(i + '&rn=50')
+            html = etree.HTML(main)
+            search_title_main_em = html.xpath("//div[@class='c-tools']/@data-tools") #搜索结果页标题的链接
+            for j in search_title_main_em:
+                getresult(j, 'search')
+    print('线程1执行完成')
+
+
+def search_second():
+    with open('list.txt', 'r', encoding='utf-8') as f:
+        list_url = re.findall('---(.*)', f.read())
+        result = []
+        for i in list_url:
+            print('执行线程2.5')
+            main = get_html(i)
+            html = etree.HTML(main)
+            search_second_url = html.xpath("//th/a/@href") #搜索结果页下方的扩展链接
+            for j in search_second_url:
+                j = 'https://www.baidu.com' + j + '&rn=50'
+                result.append(j)
+                # jsa = j + '\n'
+                # with open('for_list.txt', 'a', encoding='utf-8') as f:
+                #     f.write(jsa)
+        return result
+
+
+def search_three():
+    list = search_second()
+    for i in list:
+        print('执行线程3.5')
+        i_main = get_html(i)
+        list_end = etree.HTML(i_main)
+        search_tit = list_end.xpath("//div[@class='c-tools']/@data-tools")
+        for j in search_tit:
+           getresult(j, 'search_second')
+    print('线程2执行完成')
+
+
+def main():
+    # print('开始爬取榜单')
+    # get_realtime_list(url)
+    # print('榜单爬取完成，10秒后爬取搜索结果页')
+    # time.sleep(10)
+    # print('开始爬取搜索结果页')
+    # oldtime = time.time()
+    # search()
+    # newtime = time.time()
+    # print('搜索结果页爬取完成，用时%s秒,10秒后开始爬取扩展页链接' % str(newtime - oldtime))
+    # time.sleep(10)
+    # print('开始爬取扩展页链接')
+    # search_three()
+    # print('全部爬取完成')
+    ##########################################################################
+    print('开始爬取榜单')
+    old_time = time.time()
+    #get_realtime_list(url)
+    #双线程爬取
+    thread_two = threading.Thread(target=search, name='线程一', args=())
+    thread_san = threading.Thread(target=search_three, name='线程二', args=())
+    thread_san.start()
+    thread_two.start()
+    thread_san.join()
+    thread_two.join()
+    new_time = time.time()
+    print('全部爬取完成，用时%s秒' % str(new_time-old_time))
+
+
+if __name__ == '__main__':
+    # get_all_url()
+    main()
+
+
